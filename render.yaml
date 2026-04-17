@@ -13,22 +13,17 @@ services:
         value: production
       - key: APP_NAME
         value: "Alpha-Groq Agent Cluster"
-      
-      # Redis Connection (Injected from Render Redis service)
       - key: REDIS_URL
         fromService:
           type: redis
-          name: agent-cache
+          name: agent-redis
           property: connectionString
-
-      # Secrets - Change these in Render Dashboard
       - key: GROQ_API_KEY
         sync: false
       - key: AGENT_API_KEY
         sync: false
       - key: JWT_SECRET
         generateValue: true
-
       - key: LLM_MODEL
         value: "llama-3.1-8b-instant"
       - key: DAILY_BUDGET_USD
@@ -36,13 +31,11 @@ services:
       - key: RATE_LIMIT_PER_MINUTE
         value: "50"
 
-  # Managed Redis Instance
   - type: redis
-    name: agent-cache
+    name: agent-redis
     region: singapore
     plan: free
     maxmemoryPolicy: allkeys-lru
     ipAllowList:
       - source: 0.0.0.0/0
-        description: Allow all connections (secured by password)
-
+        description: Allow all
