@@ -2,7 +2,7 @@ services:
   - type: web
     name: ai-agent-cluster
     runtime: docker
-    dockerContext: 06-lab-complete
+    dockerContext: .
     dockerfilePath: Dockerfile
     region: singapore
     plan: free
