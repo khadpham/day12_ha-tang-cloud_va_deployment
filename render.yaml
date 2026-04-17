@@ -3,7 +3,7 @@ services:
     name: ai-agent-cluster
     runtime: docker
     dockerContext: 06-lab-complete
-    dockerfilePath: 06-lab-complete/Dockerfile
+    dockerfilePath: Dockerfile
     region: singapore
     plan: free
     healthCheckPath: /health
