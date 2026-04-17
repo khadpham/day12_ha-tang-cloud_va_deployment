@@ -5,7 +5,7 @@ services:
     dockerContext: .
     dockerfilePath: Dockerfile
     region: singapore
-    plan: starter
+    plan: free
     healthCheckPath: /health
     autoDeploy: true
     envVars:
