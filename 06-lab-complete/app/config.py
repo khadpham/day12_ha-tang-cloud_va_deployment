@@ -32,10 +32,10 @@ class Settings:
         default_factory=lambda: int(os.getenv("RATE_LIMIT_PER_MINUTE", "20"))
     )
 
-    # Budget
-    daily_budget_usd: float = field(
-        default_factory=lambda: float(os.getenv("DAILY_BUDGET_USD", "5.0"))
-    )
+# Budget (monthly per user)
+monthly_budget_usd: float = field(
+    default_factory=lambda: float(os.getenv("MONTHLY_BUDGET_USD", "10.0"))
+)
 
     # Storage
     redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", ""))
