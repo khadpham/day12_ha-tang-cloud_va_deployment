@@ -44,7 +44,7 @@ class Settings:
     def validate(self):
         logger = logging.getLogger(__name__)
         if self.environment == "production":
-            if self.agent_api_key == "dev-key-change-me":
+            if self.agent_api_key in ["dev-key-change-me", "dev-key-change-me-in-production"]:
                 raise ValueError("AGENT_API_KEY must be set in production!")
             if self.jwt_secret == "dev-jwt-secret":
                 raise ValueError("JWT_SECRET must be set in production!")
