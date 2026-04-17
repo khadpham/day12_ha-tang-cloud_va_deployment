@@ -32,7 +32,17 @@ import uvicorn
 from app.config import settings
 
 # Mock LLM (thay bằng OpenAI/Anthropic khi có API key)
-from utils.mock_llm import ask as llm_ask
+from utils.mock_llm import ask as llm_mock_ask
+
+# Real LLM Clients
+groq_client = None
+if settings.groq_api_key:
+    try:
+        from groq import Groq
+        groq_client = Groq(api_key=settings.groq_api_key)
+        logger.info("✅ Groq client initialized")
+    except ImportError:
+        logger.error("❌ Groq library missing. Run pip install groq")
 
 # ─────────────────────────────────────────────────────────
 # Logging — JSON structured
@@ -49,39 +59,74 @@ _request_count = 0
 _error_count = 0
 
 # ─────────────────────────────────────────────────────────
-# Simple In-memory Rate Limiter
+# Redis (Stateless Store)
 # ─────────────────────────────────────────────────────────
-_rate_windows: dict[str, deque] = defaultdict(deque)
+import redis
+try:
+    _redis = redis.from_url(settings.redis_url, decode_responses=True)
+    _redis.ping()
+    USE_REDIS = True
+except Exception as e:
+    logger.warning(f"Redis connection failed: {e}. Falling back to in-memory (NON-SCALABLE)")
+    _redis = None
+    USE_REDIS = False
+
+_rate_windows_local: dict[str, deque] = defaultdict(deque)
 
 def check_rate_limit(key: str):
     now = time.time()
-    window = _rate_windows[key]
-    while window and window[0] < now - 60:
-        window.popleft()
-    if len(window) >= settings.rate_limit_per_minute:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: {settings.rate_limit_per_minute} req/min",
-            headers={"Retry-After": "60"},
-        )
-    window.append(now)
+    
+    if USE_REDIS:
+        # Redis Sliding Window using Sorted Set
+        r_key = f"rate_limit:{key}"
+        pipe = _redis.pipeline()
+        pipe.zremrangebyscore(r_key, 0, now - 60)
+        pipe.zcard(r_key)
+        pipe.zadd(r_key, {str(now): now})
+        pipe.expire(r_key, 60)
+        _, current_count, _, _ = pipe.execute()
+        
+        if current_count >= settings.rate_limit_per_minute:
+            raise HTTPException(429, f"Rate limit exceeded (Redis)")
+    else:
+        # Fallback local logic
+        window = _rate_windows_local[key]
+        while window and window[0] < now - 60:
+            window.popleft()
+        if len(window) >= settings.rate_limit_per_minute:
+            raise HTTPException(429, "Rate limit exceeded (Local)")
+        window.append(now)
+
 
 # ─────────────────────────────────────────────────────────
 # Simple Cost Guard
 # ─────────────────────────────────────────────────────────
-_daily_cost = 0.0
-_cost_reset_day = time.strftime("%Y-%m-%d")
+# ─────────────────────────────────────────────────────────
+# Redis-backed Cost Guard
+# ─────────────────────────────────────────────────────────
+_daily_cost_local = 0.0
+_cost_reset_day_local = time.strftime("%Y-%m-%d")
 
 def check_and_record_cost(input_tokens: int, output_tokens: int):
-    global _daily_cost, _cost_reset_day
+    global _daily_cost_local, _cost_reset_day_local
     today = time.strftime("%Y-%m-%d")
-    if today != _cost_reset_day:
-        _daily_cost = 0.0
-        _cost_reset_day = today
-    if _daily_cost >= settings.daily_budget_usd:
-        raise HTTPException(503, "Daily budget exhausted. Try tomorrow.")
     cost = (input_tokens / 1000) * 0.00015 + (output_tokens / 1000) * 0.0006
-    _daily_cost += cost
+
+    if USE_REDIS:
+        r_key = f"cost:{today}"
+        current_cost = float(_redis.get(r_key) or 0)
+        if current_cost >= settings.daily_budget_usd:
+            raise HTTPException(503, "Daily budget exhausted (Redis)")
+        _redis.incrbyfloat(r_key, cost)
+        _redis.expire(r_key, 86400 * 2) # keep for 2 days
+    else:
+        if today != _cost_reset_day_local:
+            _daily_cost_local = 0.0
+            _cost_reset_day_local = today
+        if _daily_cost_local >= settings.daily_budget_usd:
+            raise HTTPException(503, "Daily budget exhausted (Local)")
+        _daily_cost_local += cost
+
 
 # ─────────────────────────────────────────────────────────
 # Auth
@@ -214,17 +259,37 @@ async def ask_agent(
         "client": str(request.client.host) if request.client else "unknown",
     }))
 
-    answer = llm_ask(body.question)
+    # Call LLM
+    answer = ""
+    if groq_client:
+        try:
+            chat_completion = groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": body.question}],
+                model=settings.llm_model,
+            )
+            answer = chat_completion.choices[0].message.content
+            # Update token usage from real response
+            usage = chat_completion.usage
+            input_tokens = usage.prompt_tokens
+            output_tokens = usage.completion_tokens
+        except Exception as e:
+            logger.error(f"Groq API Error: {e}")
+            raise HTTPException(502, f"LLM Gateway Error: {str(e)}")
+    else:
+        # Fallback to Mock
+        answer = llm_mock_ask(body.question)
+        output_tokens = len(answer.split()) * 2
 
-    output_tokens = len(answer.split()) * 2
+    # Final cost recording
     check_and_record_cost(0, output_tokens)
 
     return AskResponse(
         question=body.question,
         answer=answer,
-        model=settings.llm_model,
+        model=settings.llm_model if groq_client else "mock-agent",
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
 
 
 @app.get("/health", tags=["Operations"])
@@ -254,14 +319,23 @@ def ready():
 @app.get("/metrics", tags=["Operations"])
 def metrics(_key: str = Depends(verify_api_key)):
     """Basic metrics (protected)."""
+    today = time.strftime("%Y-%m-%d")
+    cost = 0.0
+    if USE_REDIS:
+        cost = float(_redis.get(f"cost:{today}") or 0.0)
+    else:
+        cost = _daily_cost_local
+        
     return {
         "uptime_seconds": round(time.time() - START_TIME, 1),
         "total_requests": _request_count,
         "error_count": _error_count,
-        "daily_cost_usd": round(_daily_cost, 4),
+        "daily_cost_usd": round(cost, 4),
         "daily_budget_usd": settings.daily_budget_usd,
-        "budget_used_pct": round(_daily_cost / settings.daily_budget_usd * 100, 1),
+        "budget_used_pct": round(cost / settings.daily_budget_usd * 100, 1),
+        "storage": "redis" if USE_REDIS else "in-memory",
     }
+
 
 
 # ─────────────────────────────────────────────────────────

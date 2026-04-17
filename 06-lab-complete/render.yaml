@@ -1,7 +1,9 @@
 services:
   - type: web
-    name: ai-agent-production
+    name: ai-agent-cluster
     runtime: docker
+    dockerContext: .
+    dockerfilePath: Dockerfile
     region: singapore
     plan: starter
     healthCheckPath: /health
@@ -9,15 +11,34 @@ services:
     envVars:
       - key: ENVIRONMENT
         value: production
-      - key: APP_VERSION
-        value: "1.0.0"
-      - key: OPENAI_API_KEY
+      - key: APP_NAME
+        value: "Alpha-Groq Agent Cluster"
+      
+      # Redis Connection (Injected from Render Redis service)
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: agent-cache
+          property: connectionString
+
+      # Secrets - Change these in Render Dashboard
+      - key: GROQ_API_KEY
         sync: false
       - key: AGENT_API_KEY
-        generateValue: true
+        sync: false
       - key: JWT_SECRET
         generateValue: true
+
+      - key: LLM_MODEL
+        value: "llama-3.1-8b-instant"
       - key: DAILY_BUDGET_USD
-        value: "5.0"
+        value: "10.0"
       - key: RATE_LIMIT_PER_MINUTE
-        value: "20"
+        value: "50"
+
+  # Managed Redis Instance
+  - type: redis
+    name: agent-cache
+    region: singapore
+    plan: free
+    maxmemoryPolicy: allkeys-lru
