@@ -22,7 +22,7 @@ class Settings:
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "llama-3.1-8b-instant"))
 
     # Security
-    agent_api_key: str = field(default_factory=lambda: os.getenv("AGENT_API_KEY", "dev-key-change-me"))
+    agent_api_key: str = field(default_factory=lambda: os.getenv("AGENT_API_KEY", "test-prod-key-1234"))
     jwt_secret: str = field(default_factory=lambda: os.getenv("JWT_SECRET", "dev-jwt-secret"))
     allowed_origins: list = field(
         default_factory=lambda: os.getenv("ALLOWED_ORIGINS", "*").split(",")
